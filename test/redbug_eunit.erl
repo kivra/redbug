@@ -179,9 +179,65 @@ t_10_test() ->
 %% test printing of improper lists
 ipl() -> [a, b|c].
 
+t_11_test() ->
+  %% LocT stripped, non-arity trace still works
+  Filename = "redbug11.txt",
+  Options = [{print_file, Filename}, {time, 999}, debug],
+  M = load_stripped_module(),
+  {_, _, _} = redbug:start("stripped_mod:local_fun->return", Options),
+  M:exported_fun(5),
+  redbug_normal_stop(),
+  maybe_show(Filename),
+  ?assertEqual(<<"stripped_mod:local_fun(5)">>,
+               get_line_seg(Filename, 2, 2)),
+  ?assertEqual([<<"stripped_mod:local_fun/1">>, <<"->">>, <<"10">>],
+               get_line_seg(Filename, 4, 2, 4)),
+  maybe_delete(Filename).
+
+t_12_test() ->
+  %% LocT stripped, full module trace still works
+  Filename = "redbug12.txt",
+  Options = [{print_file, Filename}, {time, 999}, debug],
+  M = load_stripped_module(),
+  {_, _, _} = redbug:start("stripped_mod->return", Options),
+  M:exported_fun(5),
+  redbug_normal_stop(),
+  maybe_show(Filename),
+  Lines = read_file(Filename),
+  ?assert(lists:any(fun(Line) ->
+      lists:member(<<"stripped_mod:local_fun(5)">>, Line)
+  end, Lines)),
+  maybe_delete(Filename).
+
+load_stripped_module() ->
+  %% -module(stripped_mod).
+  %% -export([exported_fun/1]).
+  %% exported_fun(X) -> local_fun(X)
+  %% local_fun(X) -> X*2.
+  Forms = [
+      {attribute,1,module,stripped_mod},
+      {attribute,2,export,[{exported_fun,1}]},
+      {function,3,exported_fun,1,
+          [{clause,3,[{var,3,'X'}],[],
+              [{call,3,{atom,3,local_fun},[{var,3,'X'}]}]}]},
+      {function,4,local_fun,1,
+          [{clause,4,[{var,4,'X'}],[],
+              [{op,4,'*',{var,4,'X'},{integer,4,2}}]}]}
+  ],
+  {ok, stripped_mod, Bin} = compile:forms(Forms),
+  {ok, {stripped_mod, StrippedBin}} = beam_lib:strip(Bin),
+  %% verify LocT is actually gone
+  {error, beam_lib, _} = beam_lib:chunks(StrippedBin, [locals]),
+  {module, stripped_mod} = code:load_binary(stripped_mod, "", StrippedBin),
+  stripped_mod.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% trace file utilities
+
+redbug_normal_stop() ->
+  timer:sleep(100),
+  redbug:stop(),
+  timer:sleep(100).
 
 maybe_show(Filename) ->
   [io:fwrite("~p~n", [read_file(Filename)]) || in_shell()].

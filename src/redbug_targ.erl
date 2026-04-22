@@ -154,9 +154,19 @@ expand_underscores(LD) ->
 expand_underscore({{'_', '_', '_'}, MatchSpec, Flags}, O) ->
     lists:foldl(mk_expand_module(MatchSpec, Flags), O, modules());
 expand_underscore({{M, '_', '_'}, MatchSpec, Flags}, O) ->
-    lists:foldl(mk_expand_function(M, MatchSpec, Flags), O, functions(M));
+    case is_counter_flags(Flags) of
+        true ->
+            lists:foldl(mk_expand_function(M, MatchSpec, Flags), O, functions(M));
+        false ->
+            [{{M, '_', '_'}, MatchSpec, Flags}|O]
+    end;
 expand_underscore({{M, F, '_'}, MatchSpec, Flags}, O) ->
-    lists:foldl(mk_expand_arity(M, F, MatchSpec, Flags), O, arities(M, F));
+    case is_counter_flags(Flags) of
+        true ->
+            lists:foldl(mk_expand_arity(M, F, MatchSpec, Flags), O, arities(M, F));
+        false ->
+            [{{M, F, '_'}, MatchSpec, Flags}|O]
+    end;
 expand_underscore(ExpandedRtp, O) ->
     [ExpandedRtp|O].
 
@@ -187,12 +197,30 @@ locals(M) ->
                 {ok, {M, [{locals, Locals}]}} ->
                     Locals;
                 {error, beam_lib, _} ->
-                    []
+                    %% LocT has been stripped, try disassembly
+                    locals_from_beam_disasm(M, Bin)
             end
+    end.
+
+locals_from_beam_disasm(M, Bin) ->
+    case code:ensure_loaded(beam_disasm) of
+        {module, beam_disasm} ->
+            Exports = globals(M),
+            case beam_disasm:file(Bin) of
+                {beam_file, _, _, _, _, Funs} ->
+                    [{F, A} || {function, F, A, _, _} <- Funs] -- Exports;
+                _ ->
+                    []
+            end;
+        _ ->
+            []
     end.
 
 globals(M) ->
     M:module_info(exports).
+
+is_counter_flags(Flags) ->
+    lists:any(fun is_counter/1, Flags).
 
 fix_procs(LD) ->
     LD#ld{procs = lists:foldl(fun mk_prc/2, [], LD#ld.procs)}.
