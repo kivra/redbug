@@ -189,25 +189,49 @@ arities(M, F) ->
     [Ari || {Fun, Ari} <- functions(M), Fun =:= F].
 
 locals(M) ->
-    case code:get_object_code(M) of
-        error ->
+    case try_get_object_code(M) of
+        undefined ->
             [];
-        {_, Bin, _} ->
-            case beam_lib:chunks(Bin, [locals]) of
+        Bin ->
+            DecompressedBin = maybe_decompress(Bin),
+            case beam_lib:chunks(DecompressedBin, [locals]) of
                 {ok, {M, [{locals, Locals}]}} ->
                     Locals;
                 {error, beam_lib, _} ->
                     %% LocT has been stripped, try disassembly
-                    locals_from_beam_disasm(M, Bin)
+                    locals_from_beam_disasm(M, DecompressedBin)
             end
     end.
+
+try_get_object_code(M) ->
+    case code:get_object_code(M) of
+        {_, Bin0, _} ->
+            Bin0;
+        error ->
+            case code:which(M) of
+                F when is_list(F) ->
+                    case file:read_file(F) of
+                        {ok, B} ->
+                            B;
+                        _ ->
+                            undefined
+                    end;
+                non_existing ->
+                    undefined
+            end
+    end.
+
+maybe_decompress(<<16#1f8b:16, 16#08, _/binary>> = Bin) ->
+    zlib:gunzip(Bin);
+maybe_decompress(Bin) ->
+    Bin.
 
 locals_from_beam_disasm(M, Bin) ->
     case code:ensure_loaded(beam_disasm) of
         {module, beam_disasm} ->
-            Exports = globals(M),
             case beam_disasm:file(Bin) of
                 {beam_file, _, _, _, _, Funs} ->
+                    Exports = globals(M),
                     [{F, A} || {function, F, A, _, _} <- Funs] -- Exports;
                 _ ->
                     []

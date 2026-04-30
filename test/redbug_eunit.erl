@@ -179,77 +179,153 @@ t_10_test() ->
 %% test printing of improper lists
 ipl() -> [a, b|c].
 
-t_11_test() ->
-  %% LocT stripped, non-arity trace still works
-  Filename = "redbug11.txt",
-  Options = [{print_file, Filename}, {time, 999}, debug],
+loct_stripped_non_arity_return_test() ->
   M = load_stripped_module(),
-  {_, _, _} = redbug:start("stripped_mod:local_fun->return", Options),
+  redbug_start(?FUNCTION_NAME, "stripped_mod:local_fun->return", []),
   M:exported_fun(5),
   redbug_normal_stop(),
-  maybe_show(Filename),
+  unload_module(M),
+  Content = redbug_output(?FUNCTION_NAME),
   ?assertEqual(<<"stripped_mod:local_fun(5)">>,
-               get_line_seg(Filename, 2, 2)),
+               get_line_seg(Content, 2, 2)),
   ?assertEqual([<<"stripped_mod:local_fun/1">>, <<"->">>, <<"10">>],
-               get_line_seg(Filename, 4, 2, 4)),
-  maybe_delete(Filename).
+               get_line_seg(Content, 4, 2, 4)).
 
-t_12_test() ->
-  %% LocT stripped, full module trace still works
-  Filename = "redbug12.txt",
-  Options = [{print_file, Filename}, {time, 999}, debug],
+loct_stripped_full_module_return_test() ->
   M = load_stripped_module(),
-  {_, _, _} = redbug:start("stripped_mod->return", Options),
+  redbug_start(?FUNCTION_NAME, "stripped_mod->return", []),
   M:exported_fun(5),
   redbug_normal_stop(),
-  maybe_show(Filename),
-  Lines = read_file(Filename),
-  ?assert(lists:any(fun(Line) ->
-      lists:member(<<"stripped_mod:local_fun(5)">>, Line)
-  end, Lines)),
-  maybe_delete(Filename).
+  unload_module(M),
+  Content = redbug_output(?FUNCTION_NAME),
+  ?assertEqual(<<"stripped_mod:local_fun(5)">>,
+               get_line_seg(Content, 4, 2)),
+  ?assertEqual([<<"stripped_mod:local_fun/1">>, <<"->">>, <<"10">>],
+               get_line_seg(Content, 6, 2, 4)).
+
+loct_stripped_non_arity_count_test() ->
+  M = load_stripped_module(),
+  redbug_start(?FUNCTION_NAME, "stripped_mod:local_fun->count", [{time, 999}]),
+  M:exported_fun(5),
+  redbug_timeout_stop(),
+  unload_module(M),
+  Content = redbug_output(?FUNCTION_NAME),
+  ?assertEqual(<<"stripped_mod:local_fun(5)">>,
+               get_line_seg(Content, 2, 2)),
+  ?assertEqual(<<"stripped_mod:local_fun/1">>,
+               get_line_seg(Content, 3, 4)).
+
+loct_stripped_full_module_count_test() ->
+  M = load_stripped_module(),
+  redbug_start(?FUNCTION_NAME, "stripped_mod->count", [{time, 999}]),
+  M:exported_fun(5),
+  redbug_timeout_stop(),
+  unload_module(M),
+  Content = redbug_output(?FUNCTION_NAME),
+  ?assertEqual(<<"stripped_mod:local_fun(5)">>,
+               get_line_seg(Content, 4, 2)),
+  ?assertEqual(<<"stripped_mod:local_fun/1">>,
+               get_line_seg(Content, 5, 4)).
 
 load_stripped_module() ->
-  %% -module(stripped_mod).
-  %% -export([exported_fun/1]).
-  %% exported_fun(X) -> local_fun(X)
-  %% local_fun(X) -> X*2.
-  Forms = [
-      {attribute,1,module,stripped_mod},
-      {attribute,2,export,[{exported_fun,1}]},
-      {function,3,exported_fun,1,
-          [{clause,3,[{var,3,'X'}],[],
-              [{call,3,{atom,3,local_fun},[{var,3,'X'}]}]}]},
-      {function,4,local_fun,1,
-          [{clause,4,[{var,4,'X'}],[],
-              [{op,4,'*',{var,4,'X'},{integer,4,2}}]}]}
-  ],
-  {ok, stripped_mod, Bin} = compile:forms(Forms),
+  TestCode =
+        "-module(stripped_mod)."
+        "-export([exported_fun/1])."
+        "exported_fun(X) -> local_fun(X)."
+        "local_fun(X) -> X*2.",
+  Opts = [determenistic, no_line_info],
+
+  {ok, stripped_mod, Bin} = compile_str(TestCode, Opts),
   {ok, {stripped_mod, StrippedBin}} = beam_lib:strip(Bin),
+  TmpFile = write_beam(stripped_mod, StrippedBin),
+
+  %% Verify beam_lib:strip does compressing
+  %% 16#1f8b: gzip magic numbers
+  %% 16#08: Compression method: deflate
+  <<16#1f, 16#8b, 16#08, _/binary>> = StrippedBin,
   %% verify LocT is actually gone
   {error, beam_lib, _} = beam_lib:chunks(StrippedBin, [locals]),
-  {module, stripped_mod} = code:load_binary(stripped_mod, "", StrippedBin),
+  {module, stripped_mod} = code:load_binary(stripped_mod, TmpFile, StrippedBin),
   stripped_mod.
+
+compile_str(Str, Opts) ->
+    Lines = string:split(Str, ".", all),
+    Forms = lists:reverse(forms_from_string(Lines, [])),
+    compile:forms(Forms, Opts).
+
+forms_from_string([], Acc) ->
+    Acc;
+forms_from_string([[]|Lines], Acc) ->
+    forms_from_string(Lines, Acc);
+forms_from_string([L|Lines], Acc) ->
+    {ok, T, _} = erl_scan:string(L ++ [$.]),
+    {ok, F} = erl_parse:parse_form(T),
+    forms_from_string(Lines, [F|Acc]).
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% trace file utilities
+
+output_filename(Name) ->
+    filename(Name, ".txt").
+
+beam_filename(Name) ->
+    filename(Name, ".beam").
+
+filename(Name, Ext) ->
+  atom_to_list(Name) ++ Ext.
+
+redbug_start(TestName, TraceFun, TraceOpts) ->
+  Filename = output_filename(TestName),
+  Options = [{print_file, Filename}, debug|TraceOpts],
+  {_, _, _} = redbug:start(TraceFun, Options).
 
 redbug_normal_stop() ->
   timer:sleep(100),
   redbug:stop(),
   timer:sleep(100).
 
-maybe_show(Filename) ->
-  [io:fwrite("~p~n", [read_file(Filename)]) || in_shell()].
+redbug_timeout_stop() ->
+  timer:sleep(1100).
 
-lines(Filename) ->
-  length(read_file(Filename)).
+write_beam(M, Bin) ->
+  TmpDir = filename:dirname(code:which(redbug_eunit)),
+  TmpFile = filename:join(TmpDir, beam_filename(M)),
+  ok = file:write_file(TmpFile, Bin),
+  {module, M} = code:load_abs(filename:rootname(TmpFile)),
+  TmpFile.
 
-get_line_seg(Filename, Line, Seg) ->
-  hd(get_line_seg(Filename, Line, Seg, Seg)).
+unload_module(M) ->
+  TmpDir = filename:dirname(code:which(redbug_eunit)),
+  TmpFile = filename:join(TmpDir, beam_filename(M)),
+  ok = file:delete(TmpFile),
+  code:purge(M).
 
-get_line_seg(Filename, Line, SegF, SegL) ->
-  [e(S, e(Line, read_file(Filename))) || S <- lists:seq(SegF, SegL)].
+redbug_output(Name) ->
+  Filename = output_filename(Name),
+  Content = read_file(Filename),
+  maybe_show(Content),
+  maybe_delete(Filename),
+  Content.
+
+maybe_show(Filename) when is_list(Filename) ->
+  [io:fwrite("~p~n", [read_file(Filename)]) || in_shell()];
+maybe_show(Content) ->
+  [io:fwrite("~p~n", [Content]) || in_shell()].
+
+lines(Filename) when is_list(Filename) ->
+  length(read_file(Filename));
+lines(Content) ->
+  length(Content).
+
+get_line_seg(Content, Line, Seg) ->
+  hd(get_line_seg(Content, Line, Seg, Seg)).
+
+-define(is_string(A), A >= 0, A =< 256).
+get_line_seg([A|_] = Filename, Line, SegF, SegL) when ?is_string(A) ->
+  [e(S, e(Line, read_file(Filename))) || S <- lists:seq(SegF, SegL)];
+get_line_seg(Content, Line, SegF, SegL) ->
+  [e(S, e(Line, Content)) || S <- lists:seq(SegF, SegL)].
 
 read_file(Filename) ->
   {ok, C} = file:read_file(Filename),
