@@ -1,0 +1,67 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+
+jobs:
+  # ----
+  # Supported versions is rather complex:
+  # We have to match available Github runner images, with available
+  # OTP-builds from hex.pm, and an compatible version of rebar3.
+  #
+  # ----
+  # Available Github runner images:
+  # https://github.com/actions/runner-images
+  #
+  # ----
+  # Available OTP builds:
+  # https://builds.hex.pm/builds/otp/ubuntu-26.04/builds.txt
+  # https://builds.hex.pm/builds/otp/ubuntu-24.04/builds.txt
+  # https://builds.hex.pm/builds/otp/ubuntu-22.04/builds.txt
+  # https://builds.hex.pm/builds/otp/ubuntu-20.04/builds.txt
+  # https://builds.hex.pm/builds/otp/ubuntu-18.04/builds.txt
+  #
+  # ---
+  # Compatibility table between OTP and rebar3
+  # https://github.com/erlang/rebar3?tab=readme-ov-file#compatibility-between-rebar3-and-erlangotp
+  #
+  test:
+    runs-on: ${{matrix.erlang.os}}
+    name: Erlang/OTP ${{matrix.erlang.otp}} / rebar3 ${{matrix.erlang.rebar3}}
+    strategy:
+      matrix:
+        erlang:
+          - otp: "24.3.4.17"
+            rebar3: "3.16.1"
+            os: ubuntu-24.04
+          - otp: "25.3.2.15"
+            rebar3: "3.22.1"
+            os: ubuntu-24.04
+          - otp: "26.2.5.5"
+            rebar3: "3.22.1"
+            os: ubuntu-24.04
+          - otp: "27.1.2"
+            rebar3: "3.22.1"
+            os: ubuntu-24.04
+          - otp: "27.1.2"
+            rebar3: "3.22.1"
+            os: ubuntu-24.04
+          - otp: "29.0"
+            rebar3: "3.25.1"
+            os: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{matrix.erlang.otp}}
+          rebar3-version: ${{matrix.erlang.rebar3}}
+          version-type: strict
+          install-hex: false
+      - run: rebar3 eunit
